@@ -63,8 +63,10 @@ interface SimulationRow {
   luna: string
   month: number
   "Valoare totală": number
-  "Contribuții": number
-  "Câștiguri": number
+  "Contribuții cumulate": number
+  "Câștiguri cumulate": number
+  "Câștig lunar": number
+  "Valoare reală"?: number
 }
 
 interface SimulationResult {
@@ -74,6 +76,8 @@ interface SimulationResult {
   totalGains: number
   yieldPct: number
   monthlyGrowth: number[]
+  totalValueReal?: number
+  yieldRealPct?: number
 }
 
 interface Scenario {
@@ -84,6 +88,13 @@ interface Scenario {
   years: number
   annualPct: number
   color: string
+  reinvest: boolean
+  note?: string
+  compounding?: 'monthly' | 'annual' | 'daily'
+  annualFeePct?: number         // %/an pe AUM
+  inflationPct?: number         // %/an
+  stepUpAnnualPct?: number      // %/an – creștere automată contribuție
+  taxOnWithdrawPct?: number     // % pe câștigurile retrase (doar când reinvest=false)
 }
 
 const fmtCurrency = (v: number): string =>
@@ -93,11 +104,16 @@ const fmtCurrency = (v: number): string =>
     maximumFractionDigits: 0,
   }).format(v)
 
-const fmtMonth = (idx: number): string => {
-  const d = new Date(2025, (idx - 1) % 12)
-  const year = 2025 + Math.floor((idx - 1) / 12)
-  return d.toLocaleString("ro-RO", { month: "short" }) + (idx > 12 ? ` '${String(year).slice(2)}` : "")
+const fmtMonth = (idx: number, start: Date = new Date()): string => {
+  const d = new Date(start.getFullYear(), start.getMonth() + (idx - 1))
+  const month = d.toLocaleString("ro-RO", { month: "short" })
+  const showYear = d.getFullYear() !== start.getFullYear() || idx > 12
+  return month + (showYear ? ` '${String(d.getFullYear()).slice(2)}` : "")
 }
+
+const rateMonthlyFromAnnual = (annual: number) => Math.pow(1 + annual, 1 / 12) - 1
+const feeMonthlyFactor = (annualFee: number) => Math.pow(1 - annualFee, 1 / 12) // multiplicativ (AUM)
+const realDeflator = (inflAnnual: number, months: number) => Math.pow(1 + inflAnnual, months / 12)
 
 function toCSV(rows: SimulationRow[], scenarios: Scenario[]) {
   if (!rows.length) return ""
@@ -124,45 +140,164 @@ function toCSV(rows: SimulationRow[], scenarios: Scenario[]) {
 }
 
 /* ======================
-   Simulation
+   Enhanced Simulation Logic
 ====================== */
 function simulate(
   initial: number,
   monthly: number,
   months: number,
   annualRate: number,
+  opts?: {
+    reinvest?: boolean
+    startDate?: Date
+    compounding?: 'monthly' | 'annual' | 'daily'
+    annualFeePct?: number       // %/an pe AUM
+    inflationPct?: number       // %/an (pentru “valoare reală”)
+    taxOnWithdrawPct?: number   // % pe câștigul retras (doar când reinvest=false)
+    stepUpAnnualPct?: number    // %/an creștere automată a contribuției lunare
+  }
 ): SimulationResult {
+  // ---- setări & conversii
+  const reinvest = opts?.reinvest ?? true
+  const startDate = opts?.startDate ?? new Date()
+  const comp = opts?.compounding ?? 'monthly'
+  const feeAnnual = (opts?.annualFeePct ?? 0) / 100
+  const inflation = (opts?.inflationPct ?? 0) / 100
+  const taxW = (opts?.taxOnWithdrawPct ?? 0) / 100
+  const stepUp = (opts?.stepUpAnnualPct ?? 0) / 100
+
+  // rate/coeficienți lunari
   const monthlyRate = Math.pow(1 + annualRate, 1 / 12) - 1
-  let balance = initial
+  const feeFactor = Math.pow(1 - feeAnnual, 1 / 12)
+  const deflator = (m: number) => Math.pow(1 + inflation, m / 12)
+
+  // ---- stări rulate
+  let balance = initial                  // valoarea rămasă investită
+  let withdrawnGains = 0                 // câștiguri retrase (după taxe)
+  let contribSoFar = initial             // contribuții cumulate (inițial + lunar)
   const rows: SimulationRow[] = []
   const monthlyGrowth: number[] = []
 
   for (let m = 1; m <= months; m++) {
-    const prevBalance = balance
-    balance += monthly
-    balance *= 1 + monthlyRate
-    
-    const contrib = initial + monthly * m
-    const gains = balance - contrib
-    
-    monthlyGrowth.push(((balance - prevBalance) / Math.max(prevBalance, 1)) * 100)
-    
+    const balanceBeforeContrib = balance
+
+    // contribuție efectivă (cu step-up anual)
+    const yearsPassed = Math.floor((m - 1) / 12)
+    const monthlyEff = monthly * Math.pow(1 + stepUp, yearsPassed)
+    balance += monthlyEff
+    contribSoFar += monthlyEff
+
+    // creștere (compunere)
+    let growthThisMonth = 0
+    if (comp === 'monthly' || comp === 'daily') {
+      growthThisMonth = balance * monthlyRate
+      balance += growthThisMonth
+    } else if (comp === 'annual') {
+      if (m % 12 === 0) {
+        growthThisMonth = balance * annualRate
+        balance += growthThisMonth
+      }
+    }
+
+    // fee AUM lunar
+    balance *= feeFactor
+
+    // fără reinvestire: retrag câștigul pozitiv al lunii și plătesc taxă pe el
+    if (!reinvest && growthThisMonth > 0) {
+      balance -= growthThisMonth
+      const netGain = growthThisMonth * (1 - taxW)
+      withdrawnGains += netGain
+    }
+
+    // bogăție totală = portofoliu + câștiguri retrase
+    const wealth = balance + withdrawnGains
+    const totalGains = wealth - contribSoFar
+    const realWealth = wealth / deflator(m)
+
+    // % creștere lunară (raport la soldul înainte de contribuție)
+    const monthlyGrowthPct =
+      balanceBeforeContrib > 0
+        ? ((balance - balanceBeforeContrib - monthlyEff) / balanceBeforeContrib) * 100
+        : 0
+    monthlyGrowth.push(monthlyGrowthPct)
+
     rows.push({
-      luna: fmtMonth(m),
+      luna: fmtMonth(m, startDate), // dacă semnătura ta e diferită, adaptează aici
       month: m,
-      "Valoare totală": Math.round(balance),
-      "Contribuții": Math.round(contrib),
-      "Câștiguri": Math.round(gains),
+      "Valoare totală": Math.round(wealth),
+      "Contribuții cumulate": Math.round(contribSoFar),
+      "Câștiguri cumulate": Math.round(totalGains),
+      "Câștig lunar": Math.round(growthThisMonth),
+      "Valoare reală": Math.round(realWealth),
     })
   }
 
-  const totalValue = balance
-  const totalContrib = initial + monthly * months
+  const totalValue = balance + withdrawnGains
+  const totalContrib = contribSoFar
   const totalGains = totalValue - totalContrib
-  const yieldPct = (totalGains / Math.max(1, totalContrib)) * 100
+  const yieldPct = totalContrib > 0 ? (totalGains / totalContrib) * 100 : 0
 
-  return { rows, totalValue, totalContrib, totalGains, yieldPct, monthlyGrowth }
+  const totalValueReal = rows[rows.length - 1]?.["Valoare reală"]
+  const yieldRealPct =
+    totalContrib > 0 && totalValueReal !== undefined
+      ? ((totalValueReal - totalContrib) / totalContrib) * 100
+      : undefined
+
+  return {
+    rows,
+    totalValue,
+    totalContrib,
+    totalGains,
+    yieldPct,
+    monthlyGrowth,
+    totalValueReal,
+    yieldRealPct,
+  }
 }
+
+
+function computeIRRFromRows(
+  rows: SimulationRow[],
+  params: { initial: number; monthly: number; months: number; reinvest: boolean; totalValue: number; totalContrib: number; }
+): number | null {
+  const { initial, monthly, months, reinvest, totalValue, totalContrib } = params
+  if (months <= 0) return null
+
+  // Construiesc fluxurile lunare: contribuții (-), eventual câștiguri retrase (+), la final răscumpărarea
+  const cf = new Array(months + 1).fill(0)
+  cf[0] = -initial
+  for (let m = 1; m <= months; m++) {
+    cf[m] -= monthly
+    if (!reinvest) {
+      const gain = rows[m - 1]["Câștig lunar"] || 0
+      if (gain > 0) cf[m] += gain
+    }
+  }
+  cf[months] += reinvest ? totalValue : totalContrib
+
+  const npv = (r: number) => cf.reduce((acc, c, t) => acc + c / Math.pow(1 + r, t), 0)
+  let lo = -0.9, hi = 1.0
+  let fLo = npv(lo), fHi = npv(hi)
+  let tries = 0
+  while (fLo * fHi > 0 && tries < 10) {
+    hi *= 2
+    fHi = npv(hi)
+    tries++
+    if (hi > 10) break
+  }
+  if (fLo * fHi > 0) return null
+
+  for (let i = 0; i < 100; i++) {
+    const mid = (lo + hi) / 2
+    const fMid = npv(mid)
+    if (Math.abs(fMid) < 1e-7) return Math.pow(1 + mid, 12) - 1
+    if (fLo * fMid < 0) { hi = mid; fHi = fMid } else { lo = mid; fLo = fMid }
+  }
+  const r = (lo + hi) / 2
+  return Math.pow(1 + r, 12) - 1
+}
+
+
 
 function validateInputs(initial: number, monthly: number, years: number, annualPct: number) {
   const errors: string[] = []
@@ -172,7 +307,7 @@ function validateInputs(initial: number, monthly: number, years: number, annualP
   if (monthly < 0) errors.push("Contribuția lunară nu poate fi negativă")
   if (monthly > 50000) errors.push("Contribuția lunară pare prea mare (max €50k)")
   if (years < 1 || years > 50) errors.push("Durata trebuie să fie între 1-50 ani")
-  if (annualPct < -20 || annualPct > 50) errors.push("Randamentul trebuie să fie între -20% și 50%")
+  if (annualPct < -50 || annualPct > 50) errors.push("Randamentul trebuie să fie între -50% și 50%")
   
   return errors
 }
@@ -200,7 +335,7 @@ function MobileDrawer({ open, onClose, children }: { open: boolean, onClose: () 
       <div className="fixed left-0 top-0 h-full w-72 bg-white dark:bg-slate-950 shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Meniu</h3>
-          <Button variant="outline" className="text-white" onClick={onClose}>
+          <Button variant="outline" onClick={onClose}>
             <X className="w-4 h-4" />
           </Button>
         </div>
@@ -223,7 +358,13 @@ export default function App() {
   const [annualPct, setAnnualPct] = useState(8)
   const [reinvest, setReinvest] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  
+  const [compounding, setCompounding] = useState<'monthly' | 'annual' | 'daily'>('monthly')
+  const [annualFeePct, setAnnualFeePct] = useState(0)     // %/an
+  const [inflationPct, setInflationPct] = useState(0)     // %/an
+  const [stepUpAnnualPct, setStepUpAnnualPct] = useState(0) // %/an
+  const [taxOnWithdrawPct, setTaxOnWithdrawPct] = useState(10) // % câștig retras
+  const [showReal, setShowReal] = useState(true)
+  const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0,10))
   // State nou pentru îmbunătățiri
   const [showErrors, setShowErrors] = useState(false)
   const [isCalculating, setIsCalculating] = useState(false)
@@ -232,6 +373,25 @@ export default function App() {
   const [activeScenario, setActiveScenario] = useState<string | null>(null)
   const [notes, setNotes] = useState("")
   const [showComparison, setShowComparison] = useState(false)
+
+  // Enhanced input handlers with validation
+  const handleInitialChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = Math.max(1, Number(e.target.value) || 0)
+    setInitial(val)
+    if (showErrors) setShowErrors(false)
+  }, [showErrors])
+
+  const handleMonthlyChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = Math.max(0, Number(e.target.value) || 0)
+    setMonthly(val)
+    if (showErrors) setShowErrors(false)
+  }, [showErrors])
+
+  const handleAnnualPctChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = Math.max(-50, Math.min(50, Number(e.target.value) || 0))
+    setAnnualPct(val)
+    if (showErrors) setShowErrors(false)
+  }, [showErrors])
 
   // Validare inputs
   const inputErrors = useMemo(() => 
@@ -244,12 +404,18 @@ export default function App() {
   const simulationResult = useMemo(() => {
     if (inputErrors.length > 0) return null
     setIsCalculating(true)
-    const result = simulate(initial, monthly, months, annualPct / 100)
+    const result = simulate(initial, monthly, months, annualPct / 100, { reinvest, startDate: new Date() })
     setTimeout(() => setIsCalculating(false), 200)
     return result
-  }, [initial, monthly, months, annualPct, inputErrors])
+  }, [initial, monthly, months, annualPct, inputErrors, reinvest])
 
   const { rows = [], totalValue = 0, totalContrib = 0, totalGains = 0, yieldPct = 0 } = simulationResult || {}
+
+  // IRR anual (TIR) – calculat din fluxurile lunare
+const irrAnnual = useMemo(() => {
+  if (!simulationResult) return null
+  return computeIRRFromRows(rows, { initial, monthly, months, reinvest, totalValue, totalContrib })
+}, [rows, initial, monthly, months, reinvest, totalValue, totalContrib, simulationResult])
 
   // Funcții helper
   const handleExport = useCallback(() => {
@@ -296,7 +462,6 @@ export default function App() {
   const copyToClipboard = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
-      // Aici ai putea adăuga un toast de succes
     } catch (err) {
       console.error('Nu s-a putut copia în clipboard:', err)
     }
@@ -310,18 +475,26 @@ export default function App() {
     setScenarios([])
     setNotes("")
     setActiveScenario(null)
+    setShowErrors(false)
   }, [])
 
+
   // Calcul scenarii pentru comparație
-  const scenarioResults = useMemo(() => {
-    return scenarios.map(scenario => {
-      const result = simulate(scenario.initial, scenario.monthly, scenario.years * 12, scenario.annualPct / 100)
+const scenarioResults = useMemo(() => {
+  return scenarios.map(scenario => {
+    const result = simulate(
+      scenario.initial,
+      scenario.monthly,
+      scenario.years * 12,
+      scenario.annualPct / 100,
+      { reinvest, startDate: new Date() }
+    )
       return {
         ...scenario,
         ...result
       }
     })
-  }, [scenarios])
+  }, [scenarios, reinvest])
 
   return (
     <div className="min-h-screen flex bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
@@ -483,21 +656,18 @@ export default function App() {
                 <CardContent className="p-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     
-                    {/* Capital inițial */}
+                    {/* Capital inițial - enhanced validation */}
                     <div className="space-y-3">
                       <Label className="text-sm font-semibold flex items-center gap-2">
                         <Target className="w-4 h-4 text-green-600" />
-                        Capital inițial
+                        Capital inițial (minim €0)
                       </Label>
                       <div className="relative">
                         <Input
                           type="number"
-                          value={initial || ''}
-                          onChange={(e) => {
-                            const val = Number(e.target.value)
-                            setInitial(val)
-                            if (inputErrors.length > 0) setShowErrors(true)
-                          }}
+                          min="0"
+                          value={initial}
+                          onChange={handleInitialChange}
                           className={`pl-8 h-11 ${inputErrors.some(e => e.includes('inițial')) 
                             ? 'border-red-300 focus:border-red-500' 
                             : 'focus:border-blue-500'}`}
@@ -508,25 +678,22 @@ export default function App() {
                         </span>
                       </div>
                       <p className="text-xs text-slate-500">
-                        Suma inițială de investit
+                        Suma inițială de investit (obligatoriu {'>'} 0)
                       </p>
                     </div>
 
-                    {/* Contribuție lunară */}
+                    {/* Contribuție lunară - enhanced validation */}
                     <div className="space-y-3">
                       <Label className="text-sm font-semibold flex items-center gap-2">
                         <Calendar className="w-4 h-4 text-blue-600" />
-                        Contribuție lunară
+                        Contribuție lunară (min €0)
                       </Label>
                       <div className="relative">
                         <Input
                           type="number"
-                          value={monthly || ''}
-                          onChange={(e) => {
-                            const val = Number(e.target.value)
-                            setMonthly(val)
-                            if (inputErrors.length > 0) setShowErrors(true)
-                          }}
+                          min="0"
+                          value={monthly}
+                          onChange={handleMonthlyChange}
                           className={`pl-8 h-11 ${inputErrors.some(e => e.includes('lunară')) 
                             ? 'border-red-300 focus:border-red-500' 
                             : 'focus:border-blue-500'}`}
@@ -569,7 +736,7 @@ export default function App() {
                           </div>
                         </SelectTrigger>
                         <SelectContent>
-                          {[1, 3, 5, 10, 15, 20, 25, 30, 40].map((y) => (
+                          {[1, 3, 5, 10, 15, 20, 25, 30, 40, 50].map((y) => (
                             <SelectItem key={y} value={String(y)}>
                               {y} {y === 1 ? 'an' : 'ani'}
                             </SelectItem>
@@ -577,11 +744,11 @@ export default function App() {
                         </SelectContent>
                       </Select>
                       <p className="text-xs text-slate-500">
-                        Perioada de investire
+                        Perioada de investire (1-50 ani)
                       </p>
                     </div>
 
-                    {/* Randament anual */}
+                    {/* Randament anual - enhanced validation */}
                     <div className="space-y-3">
                       <Label className="text-sm font-semibold flex items-center gap-2">
                         <Percent className="w-4 h-4 text-yellow-600" />
@@ -591,12 +758,10 @@ export default function App() {
                         <Input
                           type="number"
                           step="0.1"
-                          value={annualPct || ''}
-                          onChange={(e) => {
-                            const val = Number(e.target.value)
-                            setAnnualPct(val)
-                            if (inputErrors.length > 0) setShowErrors(true)
-                          }}
+                          min="-50"
+                          max="50"
+                          value={annualPct}
+                          onChange={handleAnnualPctChange}
                           className={`pr-8 h-11 ${inputErrors.some(e => e.includes('Randament')) 
                             ? 'border-red-300 focus:border-red-500' 
                             : 'focus:border-blue-500'}`}
@@ -665,48 +830,37 @@ export default function App() {
                       title: "Total contribuții",
                       value: fmtCurrency(totalContrib),
                       Icon: Target,
-                      bgGradient: "from-blue-500 to-blue-600",
-                      textColor: "text-blue-600",
                       bgColor: "bg-blue-50 dark:bg-blue-900/20",
-                      change: null
+                      textColor: "text-blue-600",
                     },
                     {
                       title: "Câștiguri generate",
                       value: fmtCurrency(totalGains),
                       Icon: TrendingUp,
-                      bgGradient: "from-green-500 to-emerald-600",
-                      textColor: "text-green-600",
                       bgColor: "bg-green-50 dark:bg-green-900/20",
-                      change: totalGains > 0 ? '+' : null
+                      textColor: "text-green-600",
                     },
                     {
                       title: "Valoare totală",
                       value: fmtCurrency(totalValue),
                       Icon: DollarSign,
-                      bgGradient: "from-indigo-500 to-purple-600",
-                      textColor: "text-indigo-600",
                       bgColor: "bg-indigo-50 dark:bg-indigo-900/20",
-                      change: null
+                      textColor: "text-indigo-600",
                     },
                     {
                       title: "ROI total",
-                      value: `${yieldPct.toFixed(1)}%`,
+                      value: `${yieldPct > 0 ? '+' : ''}${yieldPct.toFixed(1)}%`,
                       Icon: Percent,
-                      bgGradient: "from-yellow-500 to-orange-600",
-                      textColor: "text-yellow-600",
                       bgColor: "bg-yellow-50 dark:bg-yellow-900/20",
-                      change: yieldPct > 0 ? '+' : null
+                      textColor: "text-yellow-600",
                     },
-                  ].map(({ title, value, Icon, textColor, bgColor, change }, i) => (
+                  ].map(({ title, value, Icon, textColor, bgColor }, i) => (
                     <Card key={i} className={`${bgColor} border hover:shadow-lg transition-shadow duration-200`}>
                       <CardContent className="p-4 md:p-6">
                         <div className="flex items-center justify-between">
                           <div className="space-y-1">
                             <p className="text-xs font-medium opacity-70">{title}</p>
-                            <div className="flex items-center gap-1">
-                              {change && <span className="text-xs font-bold text-green-600">{change}</span>}
-                              <p className="text-xl md:text-2xl font-bold">{value}</p>
-                            </div>
+                            <p className="text-xl md:text-2xl font-bold">{value}</p>
                           </div>
                           <div className={`size-10 md:size-12 ${textColor} bg-white rounded-lg grid place-items-center shadow-sm`}>
                             <Icon className="w-5 h-5 md:w-6 md:h-6" />
@@ -717,7 +871,7 @@ export default function App() {
                   ))}
                 </div>
 
-                {/* Stats suplimentare */}
+                {/* Stats suplimentare cu explicații îmbunătățite */}
                 <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                   <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border shadow-sm">
                     <div className="text-slate-600 dark:text-slate-400 mb-1">Contribuție totală</div>
@@ -732,23 +886,25 @@ export default function App() {
                       {(totalValue / Math.max(totalContrib, 1)).toFixed(2)}×
                     </div>
                     <div className="text-xs text-slate-500 mt-1">
-                      Fiecare euro investit devine {fmtCurrency(totalValue / Math.max(totalContrib, 1))}
-                    </div>
+                    Fiecare euro investit devine {fmtCurrency(totalValue / Math.max(totalContrib, 1))}
                   </div>
-                  <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border shadow-sm">
-                    <div className="text-slate-600 dark:text-slate-400 mb-1">Randament anual mediu</div>
-                    <div className="font-bold text-blue-600">
-                      {(Math.pow(totalValue / Math.max(initial, 1), 1/years) - 1).toFixed(1)}%
-                    </div>
-                    <div className="text-xs text-slate-500 mt-1">
-                      Rata anuală compusă de creștere (CAGR)
-                    </div>
+                </div>
+                <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border shadow-sm">
+                  <div className="text-slate-600 dark:text-slate-400 mb-1">TIR (IRR) aproximativ</div>
+                  <div className="font-bold text-blue-600">
+                    {irrAnnual !== null ? (irrAnnual * 100).toFixed(1) : 'n/a'}%
                   </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    {reinvest
+                      ? "Pe baza contribuțiilor lunare și răscumpărării finale."
+                      : "Pe baza contribuțiilor, câștigurilor retrase lunar și răscumpărării capitalului."}
+                  </div>
+                </div>
                 </div>
               </section>
             )}
 
-            {/* Chart îmbunătățit */}
+            {/* Enhanced Chart with 4 lines */}
             {simulationResult && (
               <section id="chart">
                 <Card className="shadow-xl rounded-2xl overflow-hidden border-0 ring-1 ring-slate-200 dark:ring-slate-800">
@@ -756,7 +912,7 @@ export default function App() {
                     <CardTitle className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <BarChart3 className="w-5 h-5 text-purple-600" />
-                        Evoluția investiției în timp
+                        Evoluția detaliată a investiției
                       </div>
                       <div className="flex items-center gap-2">
                         <Select value={chartType} onValueChange={(v) => setChartType(v as any)}>
@@ -767,7 +923,7 @@ export default function App() {
                           </div>
                           <SelectContent>
                             <SelectItem value="area">Zonă</SelectItem>
-                            <SelectItem value="line">Linie</SelectItem>
+                            <SelectItem value="line">Linii</SelectItem>
                             <SelectItem value="bar">Bare</SelectItem>
                           </SelectContent>
                         </Select>
@@ -788,7 +944,7 @@ export default function App() {
                                 <stop offset="5%" stopColor="#10b981" stopOpacity={0.8} />
                                 <stop offset="95%" stopColor="#10b981" stopOpacity={0.05} />
                               </linearGradient>
-                              <linearGradient id="colorGains" x1="0" y1="0" x2="0" y2="1">
+                              <linearGradient id="colorGainsCum" x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.8} />
                                 <stop offset="95%" stopColor="#f59e0b" stopOpacity={0.05} />
                               </linearGradient>
@@ -808,8 +964,8 @@ export default function App() {
                             />
                             <Legend />
                             <Area type="monotone" dataKey="Valoare totală" stroke="#3b82f6" strokeWidth={2} fill="url(#colorTotal)" />
-                            <Area type="monotone" dataKey="Contribuții" stroke="#10b981" strokeWidth={2} fill="url(#colorContrib)" />
-                            <Area type="monotone" dataKey="Câștiguri" stroke="#f59e0b" strokeWidth={2} fill="url(#colorGains)" />
+                            <Area type="monotone" dataKey="Contribuții cumulate" stroke="#10b981" strokeWidth={2} fill="url(#colorContrib)" />
+                            <Area type="monotone" dataKey="Câștiguri cumulate" stroke="#f59e0b" strokeWidth={2} fill="url(#colorGainsCum)" />
                           </AreaChart>
                         ) : chartType === 'line' ? (
                           <LineChart data={rows}>
@@ -827,9 +983,10 @@ export default function App() {
                               }}
                             />
                             <Legend />
-                            <Line type="monotone" dataKey="Valoare totală" stroke="#3b82f6" strokeWidth={3} dot={{ fill: '#3b82f6', strokeWidth: 2, r: 4 }} />
-                            <Line type="monotone" dataKey="Contribuții" stroke="#10b981" strokeWidth={3} dot={{ fill: '#10b981', strokeWidth: 2, r: 4 }} />
-                            <Line type="monotone" dataKey="Câștiguri" stroke="#f59e0b" strokeWidth={3} dot={{ fill: '#f59e0b', strokeWidth: 2, r: 4 }} />
+                            <Line type="monotone" dataKey="Valoare totală" stroke="#3b82f6" strokeWidth={3} dot={{ fill: '#3b82f6', strokeWidth: 2, r: 3 }} />
+                            <Line type="monotone" dataKey="Contribuții cumulate" stroke="#10b981" strokeWidth={2} dot={{ fill: '#10b981', strokeWidth: 2, r: 3 }} />
+                            <Line type="monotone" dataKey="Câștiguri cumulate" stroke="#f59e0b" strokeWidth={2} dot={{ fill: '#f59e0b', strokeWidth: 2, r: 3 }} />
+                            <Line type="monotone" dataKey="Câștig lunar" stroke="#8b5cf6" strokeWidth={2} dot={{ fill: '#8b5cf6', strokeWidth: 2, r: 3 }} />
                           </LineChart>
                         ) : (
                           <BarChart data={rows}>
@@ -847,15 +1004,15 @@ export default function App() {
                               }}
                             />
                             <Legend />
-                            <Bar dataKey="Contribuții" fill="#10b981" radius={[4, 4, 0, 0]} />
-                            <Bar dataKey="Câștiguri" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="Contribuții cumulate" fill="#10b981" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="Câștiguri cumulate" fill="#f59e0b" radius={[4, 4, 0, 0]} />
                           </BarChart>
                         )}
                       </ResponsiveContainer>
                     </div>
 
-                    {/* Chart insights */}
-                    <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t">
+                    {/* Chart insights îmbunătățite */}
+                    <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4 pt-4 border-t">
                       <div className="text-center">
                         <div className="text-2xl font-bold text-blue-600">{months}</div>
                         <div className="text-xs text-slate-500">Luni de investire</div>
@@ -871,9 +1028,38 @@ export default function App() {
                       </div>
                       <div className="text-center">
                         <div className="text-2xl font-bold text-purple-600">
+                          {rows.length > 0 ? fmtCurrency(rows[rows.length - 1]["Câștig lunar"]) : "€0"}
+                        </div>
+                        <div className="text-xs text-slate-500">Câștig lunar final</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-2xl font-bold text-orange-600">
                           {((annualPct - 2) * years).toFixed(0)}%
                         </div>
                         <div className="text-xs text-slate-500">Avantaj vs. inflație (est.)</div>
+                      </div>
+                    </div>
+
+                    {/* Explicații pentru grafic */}
+                    <div className="mt-6 p-4 bg-slate-50 dark:bg-slate-800 rounded-lg">
+                      <h4 className="text-sm font-bold mb-2">Legenda graficului:</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 bg-blue-600 rounded"></div>
+                          <span><strong>Valoare totală:</strong> {reinvest ? "Suma totală a portofoliului" : "Portofoliu + câștiguri retrase"}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 bg-green-600 rounded"></div>
+                          <span><strong>Contribuții cumulate:</strong> Total investit până acum</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 bg-yellow-600 rounded"></div>
+                          <span><strong>Câștiguri cumulate:</strong> Profitul total generat</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 bg-purple-600 rounded"></div>
+                          <span><strong>Câștig lunar:</strong> Câștigul din acea lună</span>
+                        </div>
                       </div>
                     </div>
                   </CardContent>
@@ -881,6 +1067,7 @@ export default function App() {
               </section>
             )}
 
+            {/* Rest of sections remain the same */}
             {/* Scenarii - secțiune nouă */}
             <section id="scenarios">
               <Card className="shadow-xl rounded-2xl overflow-hidden border-0 ring-1 ring-slate-200 dark:ring-slate-800">
@@ -1056,7 +1243,7 @@ export default function App() {
               </Card>
             </section>
 
-            {/* Note îmbunătățite */}
+            {/* Note section */}
             <section id="assumptions">
               <Card className="shadow-xl rounded-2xl overflow-hidden border-0 ring-1 ring-slate-200 dark:ring-slate-800">
                 <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-green-50 dark:from-slate-800 dark:to-slate-700">
@@ -1075,7 +1262,8 @@ export default function App() {
                           "Dobânda compusă se calculează lunar din rata anuală",
                           "Nu sunt incluse taxe, comisioane sau inflația",
                           "Randamentul este constant pe toată perioada",
-                          "Reinvestirea câștigurilor este automată"
+                          "Reinvestirea câștigurilor este automată",
+                          "Capitalul inițial trebuie să fie minim €1"
                         ].map((item, i) => (
                           <li key={i} className="flex gap-3 items-start">
                             <CheckCircle className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
@@ -1092,6 +1280,7 @@ export default function App() {
                         onChange={(e) => setNotes(e.target.value)}
                         placeholder="Adaugă observații, obiective financiare, strategii..."
                         rows={6}
+                        maxLength={500}
                         className="w-full rounded-xl border border-slate-200 dark:border-slate-700 p-3 text-sm bg-white dark:bg-slate-800 focus:border-blue-500 focus:ring-blue-100 transition-all resize-none"
                       />
                       <div className="flex justify-between items-center mt-2">
@@ -1111,7 +1300,7 @@ export default function App() {
 
                   {/* Sfaturi practice */}
                   <div className="mt-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200 dark:border-blue-800">
-                    <h4 className="text-sm font-bold mb-2 text-blue-700 dark:text-blue-300">💡 Sfaturi pentru investiții:</h4>
+                    <h4 className="text-sm font-bold mb-2 text-blue-700 dark:text-blue-300">Sfaturi pentru investiții:</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-blue-600 dark:text-blue-400">
                       <div>
                         <strong>Diversificare:</strong> Nu pune toate ouăle în același coș
