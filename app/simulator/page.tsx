@@ -1,6 +1,6 @@
-'use client'
+"use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Card,
   CardHeader,
@@ -31,7 +31,7 @@ import {
   LineChart,
   Line,
   BarChart,
-  Bar
+  Bar,
 } from "recharts"
 import {
   Calculator,
@@ -52,13 +52,11 @@ import {
   PieChart,
   X,
   Plus,
-  Trash2
+  Trash2,
+  Rocket,
 } from "lucide-react"
 
-/* ======================
-   Types & helpers
-====================== */
-
+/* ====================== Types & helpers ====================== */
 interface SimulationRow {
   luna: string
   month: number
@@ -88,13 +86,13 @@ interface Scenario {
   years: number
   annualPct: number
   color: string
-  reinvest: boolean
+  reinvest?: boolean
   note?: string
-  compounding?: 'monthly' | 'annual' | 'daily'
-  annualFeePct?: number         // %/an pe AUM
-  inflationPct?: number         // %/an
-  stepUpAnnualPct?: number      // %/an – creștere automată contribuție
-  taxOnWithdrawPct?: number     // % pe câștigurile retrase (doar când reinvest=false)
+  compounding?: "monthly" | "annual" | "daily"
+  annualFeePct?: number // %/an pe AUM
+  inflationPct?: number // %/an
+  stepUpAnnualPct?: number // %/an – creștere automată contribuție
+  taxOnWithdrawPct?: number // % pe câștigurile retrase (doar când reinvest=false)
 }
 
 const fmtCurrency = (v: number): string =>
@@ -111,77 +109,64 @@ const fmtMonth = (idx: number, start: Date = new Date()): string => {
   return month + (showYear ? ` '${String(d.getFullYear()).slice(2)}` : "")
 }
 
-const rateMonthlyFromAnnual = (annual: number) => Math.pow(1 + annual, 1 / 12) - 1
-const feeMonthlyFactor = (annualFee: number) => Math.pow(1 - annualFee, 1 / 12) // multiplicativ (AUM)
-const realDeflator = (inflAnnual: number, months: number) => Math.pow(1 + inflAnnual, months / 12)
-
 function toCSV(rows: SimulationRow[], scenarios: Scenario[]) {
   if (!rows.length) return ""
-  
-  let csv = "Simulare Investiții - Export Raport\n"
-  csv += `Data: ${new Date().toLocaleDateString('ro-RO')}\n\n`
-  
-  // Scenarii
-  csv += "SCENARII:\n"
-  scenarios.forEach(s => {
-    csv += `${s.name},Initial: €${s.initial},Lunar: €${s.monthly},Ani: ${s.years},Randament: ${s.annualPct}%\n`
-  })
-  csv += "\n"
-  
-  // Date
+  const header = [
+    "Simulare Investiții - Export Raport",
+    `Data: ${new Date().toLocaleDateString("ro-RO")}`,
+    "",
+  ]
+  const scenariiLines = [
+    "SCENARII:",
+    ...scenarios.map(
+      (s) =>
+        `${s.name},Initial: €${s.initial},Lunar: €${s.monthly},Ani: ${s.years},Randament: ${s.annualPct}%`
+    ),
+    "",
+  ]
   const headers = Object.keys(rows[0]) as (keyof SimulationRow)[]
-  csv += headers.join(",") + "\n"
-  
-  for (const r of rows) {
-    csv += headers.map((h) => String(r[h])).join(",") + "\n"
-  }
-  
-  return csv
+  const table = [headers.join(","), ...rows.map((r) => headers.map((h) => String(r[h])).join(","))]
+  return [...header, ...scenariiLines, ...table].join("\n")
 }
 
-/* ======================
-   Enhanced Simulation Logic
-====================== */
+/* ====================== Enhanced Simulation Logic ====================== */
 function simulate(
   initial: number,
   monthly: number,
   months: number,
-  annualRate: number,
+  annualRate: number, // ex: 0.08
   opts?: {
     reinvest?: boolean
     startDate?: Date
-    compounding?: 'monthly' | 'annual' | 'daily'
-    annualFeePct?: number       // %/an pe AUM
-    inflationPct?: number       // %/an (pentru “valoare reală”)
-    taxOnWithdrawPct?: number   // % pe câștigul retras (doar când reinvest=false)
-    stepUpAnnualPct?: number    // %/an creștere automată a contribuției lunare
+    compounding?: "monthly" | "annual" | "daily"
+    annualFeePct?: number // %/an pe AUM
+    inflationPct?: number // %/an (pentru “valoare reală”)
+    taxOnWithdrawPct?: number // % pe câștigul retras (doar când reinvest=false)
+    stepUpAnnualPct?: number // %/an creștere automată a contribuției lunare
   }
 ): SimulationResult {
-  // ---- setări & conversii
   const reinvest = opts?.reinvest ?? true
   const startDate = opts?.startDate ?? new Date()
-  const comp = opts?.compounding ?? 'monthly'
+  const comp = opts?.compounding ?? "monthly"
   const feeAnnual = (opts?.annualFeePct ?? 0) / 100
   const inflation = (opts?.inflationPct ?? 0) / 100
   const taxW = (opts?.taxOnWithdrawPct ?? 0) / 100
   const stepUp = (opts?.stepUpAnnualPct ?? 0) / 100
 
-  // rate/coeficienți lunari
   const monthlyRate = Math.pow(1 + annualRate, 1 / 12) - 1
   const feeFactor = Math.pow(1 - feeAnnual, 1 / 12)
   const deflator = (m: number) => Math.pow(1 + inflation, m / 12)
 
-  // ---- stări rulate
-  let balance = initial                  // valoarea rămasă investită
-  let withdrawnGains = 0                 // câștiguri retrase (după taxe)
-  let contribSoFar = initial             // contribuții cumulate (inițial + lunar)
+  let balance = initial
+  let withdrawnGains = 0
+  let contribSoFar = initial
+
   const rows: SimulationRow[] = []
   const monthlyGrowth: number[] = []
 
   for (let m = 1; m <= months; m++) {
     const balanceBeforeContrib = balance
 
-    // contribuție efectivă (cu step-up anual)
     const yearsPassed = Math.floor((m - 1) / 12)
     const monthlyEff = monthly * Math.pow(1 + stepUp, yearsPassed)
     balance += monthlyEff
@@ -189,10 +174,10 @@ function simulate(
 
     // creștere (compunere)
     let growthThisMonth = 0
-    if (comp === 'monthly' || comp === 'daily') {
+    if (comp === "monthly" || comp === "daily") {
       growthThisMonth = balance * monthlyRate
       balance += growthThisMonth
-    } else if (comp === 'annual') {
+    } else if (comp === "annual") {
       if (m % 12 === 0) {
         growthThisMonth = balance * annualRate
         balance += growthThisMonth
@@ -209,12 +194,10 @@ function simulate(
       withdrawnGains += netGain
     }
 
-    // bogăție totală = portofoliu + câștiguri retrase
     const wealth = balance + withdrawnGains
     const totalGains = wealth - contribSoFar
     const realWealth = wealth / deflator(m)
 
-    // % creștere lunară (raport la soldul înainte de contribuție)
     const monthlyGrowthPct =
       balanceBeforeContrib > 0
         ? ((balance - balanceBeforeContrib - monthlyEff) / balanceBeforeContrib) * 100
@@ -222,7 +205,7 @@ function simulate(
     monthlyGrowth.push(monthlyGrowthPct)
 
     rows.push({
-      luna: fmtMonth(m, startDate), // dacă semnătura ta e diferită, adaptează aici
+      luna: fmtMonth(m, startDate),
       month: m,
       "Valoare totală": Math.round(wealth),
       "Contribuții cumulate": Math.round(contribSoFar),
@@ -236,7 +219,6 @@ function simulate(
   const totalContrib = contribSoFar
   const totalGains = totalValue - totalContrib
   const yieldPct = totalContrib > 0 ? (totalGains / totalContrib) * 100 : 0
-
   const totalValueReal = rows[rows.length - 1]?.["Valoare reală"]
   const yieldRealPct =
     totalContrib > 0 && totalValueReal !== undefined
@@ -255,15 +237,20 @@ function simulate(
   }
 }
 
-
 function computeIRRFromRows(
   rows: SimulationRow[],
-  params: { initial: number; monthly: number; months: number; reinvest: boolean; totalValue: number; totalContrib: number; }
+  params: {
+    initial: number
+    monthly: number
+    months: number
+    reinvest: boolean
+    totalValue: number
+    totalContrib: number
+  }
 ): number | null {
   const { initial, monthly, months, reinvest, totalValue, totalContrib } = params
   if (months <= 0) return null
 
-  // Construiesc fluxurile lunare: contribuții (-), eventual câștiguri retrase (+), la final răscumpărarea
   const cf = new Array(months + 1).fill(0)
   cf[0] = -initial
   for (let m = 1; m <= months; m++) {
@@ -276,8 +263,11 @@ function computeIRRFromRows(
   cf[months] += reinvest ? totalValue : totalContrib
 
   const npv = (r: number) => cf.reduce((acc, c, t) => acc + c / Math.pow(1 + r, t), 0)
-  let lo = -0.9, hi = 1.0
-  let fLo = npv(lo), fHi = npv(hi)
+
+  let lo = -0.9,
+    hi = 1.0
+  let fLo = npv(lo),
+    fHi = npv(hi)
   let tries = 0
   while (fLo * fHi > 0 && tries < 10) {
     hi *= 2
@@ -291,142 +281,172 @@ function computeIRRFromRows(
     const mid = (lo + hi) / 2
     const fMid = npv(mid)
     if (Math.abs(fMid) < 1e-7) return Math.pow(1 + mid, 12) - 1
-    if (fLo * fMid < 0) { hi = mid; fHi = fMid } else { lo = mid; fLo = fMid }
+    if (fLo * fMid < 0) {
+      hi = mid
+      fHi = fMid
+    } else {
+      lo = mid
+      fLo = fMid
+    }
   }
   const r = (lo + hi) / 2
   return Math.pow(1 + r, 12) - 1
 }
 
-
-
 function validateInputs(initial: number, monthly: number, years: number, annualPct: number) {
   const errors: string[] = []
-  
   if (initial < 0) errors.push("Capitalul inițial nu poate fi negativ")
-  if (initial > 1000000) errors.push("Capitalul inițial pare prea mare (max €1M)")
+  if (initial > 1_000_000) errors.push("Capitalul inițial pare prea mare (max €1M)")
   if (monthly < 0) errors.push("Contribuția lunară nu poate fi negativă")
-  if (monthly > 50000) errors.push("Contribuția lunară pare prea mare (max €50k)")
+  if (monthly > 50_000) errors.push("Contribuția lunară pare prea mare (max €50k)")
   if (years < 1 || years > 50) errors.push("Durata trebuie să fie între 1-50 ani")
   if (annualPct < -50 || annualPct > 50) errors.push("Randamentul trebuie să fie între -50% și 50%")
-  
   return errors
 }
 
-/* ======================
-   Mobile Drawer Component
-====================== */
-function MobileDrawer({ open, onClose, children }: { open: boolean, onClose: () => void, children: React.ReactNode }) {
+/* ====================== Mobile Drawer Component ====================== */
+function MobileDrawer({
+  open,
+  onClose,
+  children,
+}: {
+  open: boolean
+  onClose: () => void
+  children: React.ReactNode
+}) {
   useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
     if (open) {
-      document.body.style.overflow = 'hidden'
+      document.body.style.overflow = "hidden"
+      window.addEventListener("keydown", onKey)
     } else {
-      document.body.style.overflow = ''
+      document.body.style.overflow = ""
     }
     return () => {
-      document.body.style.overflow = ''
+      document.body.style.overflow = ""
+      window.removeEventListener("keydown", onKey)
     }
-  }, [open])
+  }, [open, onClose])
 
   if (!open) return null
-
   return (
-    <div className="fixed inset-0 z-50 lg:hidden">
+    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal>
       <div className="fixed inset-0 bg-black/50" onClick={onClose} />
-      <div className="fixed left-0 top-0 h-full w-72 bg-white dark:bg-slate-950 shadow-xl">
+      <div className="fixed left-0 top-0 h-full w-72 bg-white dark:bg-slate-950 shadow-xl" aria-label="Meniu lateral">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Meniu</h3>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} aria-label="Închide meniul">
             <X className="w-4 h-4" />
           </Button>
         </div>
-        <div className="p-4">
-          {children}
-        </div>
+        <div className="p-4">{children}</div>
       </div>
     </div>
   )
 }
 
-/* ======================
-   App
-====================== */
+/* ====================== App ====================== */
 export default function App() {
-  // State principal
-  const [initial, setInitial] = useState(1000)
+  // State principal (initial poate fi 0 OBLIGATORIU)
+  const [initial, setInitial] = useState(0)
   const [monthly, setMonthly] = useState(200)
   const [years, setYears] = useState(10)
   const [annualPct, setAnnualPct] = useState(8)
   const [reinvest, setReinvest] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [compounding, setCompounding] = useState<'monthly' | 'annual' | 'daily'>('monthly')
-  const [annualFeePct, setAnnualFeePct] = useState(0)     // %/an
-  const [inflationPct, setInflationPct] = useState(0)     // %/an
-  const [stepUpAnnualPct, setStepUpAnnualPct] = useState(0) // %/an
-  const [taxOnWithdrawPct, setTaxOnWithdrawPct] = useState(10) // % câștig retras
-  const [showReal, setShowReal] = useState(true)
-  const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0,10))
-  // State nou pentru îmbunătățiri
+  const [compounding] = useState<"monthly" | "annual" | "daily">("monthly")
+  const [annualFeePct] = useState(0) // extensibil
+  const [inflationPct] = useState(0) // extensibil
+  const [stepUpAnnualPct] = useState(0) // extensibil
+  const [taxOnWithdrawPct] = useState(10) // extensibil
   const [showErrors, setShowErrors] = useState(false)
   const [isCalculating, setIsCalculating] = useState(false)
-  const [chartType, setChartType] = useState<'area' | 'line' | 'bar'>('area')
+  const [chartType, setChartType] = useState<"area" | "line" | "bar">("area")
   const [scenarios, setScenarios] = useState<Scenario[]>([])
   const [activeScenario, setActiveScenario] = useState<string | null>(null)
   const [notes, setNotes] = useState("")
   const [showComparison, setShowComparison] = useState(false)
+  const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
 
-  // Enhanced input handlers with validation
-  const handleInitialChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Math.max(1, Number(e.target.value) || 0)
-    setInitial(val)
-    if (showErrors) setShowErrors(false)
-  }, [showErrors])
+  // Handlers cu validare
+  const handleInitialChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = Math.max(0, Number(e.target.value) || 0)
+      setInitial(val)
+      if (showErrors) setShowErrors(false)
+    },
+    [showErrors]
+  )
 
-  const handleMonthlyChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Math.max(0, Number(e.target.value) || 0)
-    setMonthly(val)
-    if (showErrors) setShowErrors(false)
-  }, [showErrors])
+  const handleMonthlyChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = Math.max(0, Number(e.target.value) || 0)
+      setMonthly(val)
+      if (showErrors) setShowErrors(false)
+    },
+    [showErrors]
+  )
 
-  const handleAnnualPctChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Math.max(-50, Math.min(50, Number(e.target.value) || 0))
-    setAnnualPct(val)
-    if (showErrors) setShowErrors(false)
-  }, [showErrors])
+  const handleAnnualPctChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = Math.max(-50, Math.min(50, Number(e.target.value) || 0))
+      setAnnualPct(val)
+      if (showErrors) setShowErrors(false)
+    },
+    [showErrors]
+  )
 
   // Validare inputs
-  const inputErrors = useMemo(() => 
-    validateInputs(initial, monthly, years, annualPct),
+  const inputErrors = useMemo(
+    () => validateInputs(initial, monthly, years, annualPct),
     [initial, monthly, years, annualPct]
   )
 
-  // Simulare cu debounce pentru performanță
+  // Simulare
   const months = years * 12
   const simulationResult = useMemo(() => {
     if (inputErrors.length > 0) return null
     setIsCalculating(true)
-    const result = simulate(initial, monthly, months, annualPct / 100, { reinvest, startDate: new Date() })
-    setTimeout(() => setIsCalculating(false), 200)
+    const result = simulate(initial, monthly, months, annualPct / 100, {
+      reinvest,
+      startDate: new Date(startDate),
+      compounding,
+      annualFeePct,
+      inflationPct,
+      stepUpAnnualPct,
+      taxOnWithdrawPct,
+    })
+    setTimeout(() => setIsCalculating(false), 150)
     return result
-  }, [initial, monthly, months, annualPct, inputErrors, reinvest])
+  }, [initial, monthly, months, annualPct, inputErrors, reinvest, startDate, compounding, annualFeePct, inflationPct, stepUpAnnualPct, taxOnWithdrawPct])
 
-  const { rows = [], totalValue = 0, totalContrib = 0, totalGains = 0, yieldPct = 0 } = simulationResult || {}
+  const { rows = [], totalValue = 0, totalContrib = 0, totalGains = 0, yieldPct = 0 } =
+    simulationResult || {}
 
-  // IRR anual (TIR) – calculat din fluxurile lunare
-const irrAnnual = useMemo(() => {
-  if (!simulationResult) return null
-  return computeIRRFromRows(rows, { initial, monthly, months, reinvest, totalValue, totalContrib })
-}, [rows, initial, monthly, months, reinvest, totalValue, totalContrib, simulationResult])
+  // IRR anual (TIR)
+  const irrAnnual = useMemo(() => {
+    if (!simulationResult) return null
+    return computeIRRFromRows(rows, {
+      initial,
+      monthly,
+      months,
+      reinvest,
+      totalValue,
+      totalContrib,
+    })
+  }, [rows, initial, monthly, months, reinvest, totalValue, totalContrib, simulationResult])
 
-  // Funcții helper
+  // Export CSV
   const handleExport = useCallback(() => {
     if (!rows.length) return
-    
     const csv = toCSV(rows, scenarios)
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `simulare-investitii-${new Date().toISOString().slice(0,10)}.csv`
+    a.download = `simulare-investitii-${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }, [rows, scenarios])
@@ -440,8 +460,7 @@ const irrAnnual = useMemo(() => {
 
   const addScenario = useCallback(() => {
     if (inputErrors.length > 0) return
-    
-    const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4']
+    const colors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"]
     const newScenario: Scenario = {
       id: Date.now().toString(),
       name: `Scenariul ${scenarios.length + 1}`,
@@ -449,26 +468,29 @@ const irrAnnual = useMemo(() => {
       monthly,
       years,
       annualPct,
-      color: colors[scenarios.length % colors.length]
+      color: colors[scenarios.length % colors.length],
     }
-    setScenarios(prev => [...prev, newScenario])
+    setScenarios((prev) => [...prev, newScenario])
   }, [initial, monthly, years, annualPct, scenarios.length, inputErrors])
 
-  const removeScenario = useCallback((id: string) => {
-    setScenarios(prev => prev.filter(s => s.id !== id))
-    if (activeScenario === id) setActiveScenario(null)
-  }, [activeScenario])
+  const removeScenario = useCallback(
+    (id: string) => {
+      setScenarios((prev) => prev.filter((s) => s.id !== id))
+      if (activeScenario === id) setActiveScenario(null)
+    },
+    [activeScenario]
+  )
 
   const copyToClipboard = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
     } catch (err) {
-      console.error('Nu s-a putut copia în clipboard:', err)
+      console.error("Nu s-a putut copia în clipboard:", err)
     }
   }, [])
 
   const resetAll = useCallback(() => {
-    setInitial(1000)
+    setInitial(0)
     setMonthly(200)
     setYears(10)
     setAnnualPct(8)
@@ -478,23 +500,27 @@ const irrAnnual = useMemo(() => {
     setShowErrors(false)
   }, [])
 
-
-  // Calcul scenarii pentru comparație
-const scenarioResults = useMemo(() => {
-  return scenarios.map(scenario => {
-    const result = simulate(
-      scenario.initial,
-      scenario.monthly,
-      scenario.years * 12,
-      scenario.annualPct / 100,
-      { reinvest, startDate: new Date() }
-    )
-      return {
-        ...scenario,
-        ...result
-      }
+  // Calcul scenarii
+  const scenarioResults = useMemo(() => {
+    return scenarios.map((scenario) => {
+      const result = simulate(
+        scenario.initial,
+        scenario.monthly,
+        scenario.years * 12,
+        scenario.annualPct / 100,
+        { reinvest, startDate: new Date(startDate) }
+      )
+      return { ...scenario, ...result }
     })
-  }, [scenarios, reinvest])
+  }, [scenarios, reinvest, startDate])
+
+  // Quick-start nudges (îi încurajează să înceapă ACUM)
+  const quickStarts = [
+    { label: "Începe cu €0 azi", action: () => setInitial(0) },
+    { label: "200€/lună", action: () => setMonthly(200) },
+    { label: "500€/lună", action: () => setMonthly(500) },
+    { label: "Crește durata la 20 ani", action: () => setYears(20) },
+  ]
 
   return (
     <div className="min-h-screen flex bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
@@ -543,15 +569,12 @@ const scenarioResults = useMemo(() => {
             </div>
           </div>
         )}
-
-        <div className="px-4 py-3 border-t text-xs text-slate-500 text-center">
-          © 2025 InvestSim Pro v2.0
-        </div>
+        <div className="px-4 py-3 border-t text-xs text-slate-500 text-center">© 2025 InvestSim Pro v2.0</div>
       </aside>
 
       {/* Content */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header îmbunătățit */}
+        {/* Header */}
         <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur-md dark:bg-slate-900/95 shadow-sm">
           <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -563,61 +586,63 @@ const scenarioResults = useMemo(() => {
               >
                 <Menu className="w-4 h-4" />
               </Button>
-              
               <div className="flex items-center gap-3">
                 <div className="size-8 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-500 grid place-items-center text-white">
                   <Calculator className="w-4 h-4" />
                 </div>
                 <div>
                   <h2 className="text-lg font-bold leading-tight">Simulator Investiții</h2>
-                  <p className="text-xs text-slate-500">
-                    Planificare financiară inteligentă
-                  </p>
+                  <p className="text-xs text-slate-500">Planificare financiară inteligentă</p>
                 </div>
               </div>
             </div>
-            
             <div className="flex items-center gap-2">
               {inputErrors.length > 0 && (
-                <div className="flex items-center gap-1 text-red-500 text-sm">
+                <div className="flex items-center gap-1 text-red-500 text-sm" aria-live="polite">
                   <AlertCircle className="w-4 h-4" />
                   <span className="hidden sm:inline">{inputErrors.length} erori</span>
                 </div>
               )}
-              
               {simulationResult && inputErrors.length === 0 && (
-                <div className="flex items-center gap-1 text-green-500 text-sm">
+                <div className="flex items-center gap-1 text-green-500 text-sm" aria-live="polite">
                   <CheckCircle className="w-4 h-4" />
                   <span className="hidden sm:inline">Valid</span>
                 </div>
               )}
-
-              <Button 
-                variant="outline" 
-                className="gap-2" 
-                onClick={handleExport}
-                disabled={!rows.length}
-              >
+              <Button variant="outline" className="gap-2" onClick={handleExport} disabled={!rows.length}>
                 <Download className="w-4 h-4" />
                 <span className="hidden sm:inline">Export</span>
               </Button>
-
-              <Button 
-                variant="outline" 
-                className="gap-2" 
-                onClick={resetAll}
-              >
+              <Button variant="outline" className="gap-2" onClick={resetAll}>
                 <RefreshCw className="w-4 h-4" />
                 <span className="hidden sm:inline">Reset</span>
               </Button>
             </div>
           </div>
+
+          {/* Nudge bar pentru a începe acum */}
+          {(initial === 0 || monthly === 0) && (
+            <div className="max-w-7xl mx-auto px-4 md:px-6 pb-3">
+              <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-2 text-sm">
+                <Rocket className="w-4 h-4" />
+                <span>
+                  Începe acum: chiar și cu <strong>€0 capital inițial</strong> și o contribuție mică, timpul lucrează în favoarea ta.
+                </span>
+                <div className="ml-auto flex gap-2">
+                  {quickStarts.map((q) => (
+                    <Button key={q.label} size="sm" variant="outline" onClick={q.action}>
+                      {q.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </header>
 
-        {/* Main container */}
+        {/* Main */}
         <main className="flex-1">
           <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-8">
-            
             {/* Erori validation */}
             {showErrors && inputErrors.length > 0 && (
               <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4">
@@ -636,14 +661,13 @@ const scenarioResults = useMemo(() => {
               </div>
             )}
 
-            {/* Parametri îmbunătățiți */}
+            {/* Parametri */}
             <section id="params">
               <Card className="shadow-lg border">
                 <CardHeader className="border-b bg-slate-50 dark:bg-slate-800">
                   <CardTitle className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Settings className="w-5 h-5 text-blue-600" />
-                      Configurare investiție
+                      <Settings className="w-5 h-5 text-blue-600" /> Configurare investiție
                     </div>
                     {isCalculating && (
                       <div className="flex items-center gap-2 text-blue-600">
@@ -655,63 +679,45 @@ const scenarioResults = useMemo(() => {
                 </CardHeader>
                 <CardContent className="p-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    
-                    {/* Capital inițial - enhanced validation */}
+                    {/* Capital inițial */}
                     <div className="space-y-3">
                       <Label className="text-sm font-semibold flex items-center gap-2">
-                        <Target className="w-4 h-4 text-green-600" />
-                        Capital inițial (minim €0)
+                        <Target className="w-4 h-4 text-green-600" /> Capital inițial (poate fi €0)
                       </Label>
                       <div className="relative">
                         <Input
                           type="number"
-                          min="0"
+                          min={0}
                           value={initial}
                           onChange={handleInitialChange}
-                          className={`pl-8 h-11 ${inputErrors.some(e => e.includes('inițial')) 
-                            ? 'border-red-300 focus:border-red-500' 
-                            : 'focus:border-blue-500'}`}
+                          className={`pl-8 h-11 ${inputErrors.some((e) => e.includes("inițial")) ? "border-red-300 focus:border-red-500" : "focus:border-blue-500"}`}
                           placeholder="ex. 1000"
+                          aria-label="Capital inițial"
                         />
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-medium">
-                          €
-                        </span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-medium">€</span>
                       </div>
-                      <p className="text-xs text-slate-500">
-                        Suma inițială de investit (obligatoriu {'>'} 0)
-                      </p>
+                      <p className="text-xs text-slate-500">Suma inițială de investit (poate fi 0).</p>
                     </div>
 
-                    {/* Contribuție lunară - enhanced validation */}
+                    {/* Contribuție lunară */}
                     <div className="space-y-3">
                       <Label className="text-sm font-semibold flex items-center gap-2">
-                        <Calendar className="w-4 h-4 text-blue-600" />
-                        Contribuție lunară (min €0)
+                        <Calendar className="w-4 h-4 text-blue-600" /> Contribuție lunară (min €0)
                       </Label>
                       <div className="relative">
                         <Input
                           type="number"
-                          min="0"
+                          min={0}
                           value={monthly}
                           onChange={handleMonthlyChange}
-                          className={`pl-8 h-11 ${inputErrors.some(e => e.includes('lunară')) 
-                            ? 'border-red-300 focus:border-red-500' 
-                            : 'focus:border-blue-500'}`}
+                          className={`pl-8 h-11 ${inputErrors.some((e) => e.includes("lunară")) ? "border-red-300 focus:border-red-500" : "focus:border-blue-500"}`}
                           placeholder="ex. 200"
+                          aria-label="Contribuție lunară"
                         />
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-medium">
-                          €
-                        </span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-medium">€</span>
                       </div>
-                      
                       <div className="space-y-2">
-                        <Slider
-                          value={[monthly]}
-                          min={0}
-                          max={2000}
-                          step={25}
-                          onValueChange={(v) => setMonthly(v[0])}
-                        />
+                        <Slider value={[monthly]} min={0} max={2000} step={25} onValueChange={(v) => setMonthly(v[0])} />
                         <div className="flex justify-between text-xs text-slate-400">
                           <span>€0</span>
                           <span className="text-blue-600 font-medium">€{monthly}</span>
@@ -723,13 +729,9 @@ const scenarioResults = useMemo(() => {
                     {/* Durata */}
                     <div className="space-y-3">
                       <Label className="text-sm font-semibold flex items-center gap-2">
-                        <Calendar className="w-4 h-4 text-purple-600" />
-                        Durata investiției
+                        <Calendar className="w-4 h-4 text-purple-600" /> Durata investiției
                       </Label>
-                      <Select
-                        value={String(years)}
-                        onValueChange={(v) => setYears(Number(v))}
-                      >
+                      <Select value={String(years)} onValueChange={(v) => setYears(Number(v))}>
                         <SelectTrigger>
                           <div className="h-11 flex items-center w-full">
                             <SelectValue placeholder="Selectează durata" />
@@ -738,38 +740,32 @@ const scenarioResults = useMemo(() => {
                         <SelectContent>
                           {[1, 3, 5, 10, 15, 20, 25, 30, 40, 50].map((y) => (
                             <SelectItem key={y} value={String(y)}>
-                              {y} {y === 1 ? 'an' : 'ani'}
+                              {y} {y === 1 ? "an" : "ani"}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-slate-500">
-                        Perioada de investire (1-50 ani)
-                      </p>
+                      <p className="text-xs text-slate-500">Perioada de investire (1-50 ani)</p>
                     </div>
 
-                    {/* Randament anual - enhanced validation */}
+                    {/* Randament anual */}
                     <div className="space-y-3">
                       <Label className="text-sm font-semibold flex items-center gap-2">
-                        <Percent className="w-4 h-4 text-yellow-600" />
-                        Randament anual estimat
+                        <Percent className="w-4 h-4 text-yellow-600" /> Randament anual estimat
                       </Label>
                       <div className="relative">
                         <Input
                           type="number"
-                          step="0.1"
-                          min="-50"
-                          max="50"
+                          step={0.1}
+                          min={-50}
+                          max={50}
                           value={annualPct}
                           onChange={handleAnnualPctChange}
-                          className={`pr-8 h-11 ${inputErrors.some(e => e.includes('Randament')) 
-                            ? 'border-red-300 focus:border-red-500' 
-                            : 'focus:border-blue-500'}`}
+                          className={`pr-8 h-11 ${inputErrors.some((e) => e.includes("Randament")) ? "border-red-300 focus:border-red-500" : "focus:border-blue-500"}`}
                           placeholder="ex. 8.0"
+                          aria-label="Randament anual"
                         />
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-medium">
-                          %
-                        </span>
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-medium">%</span>
                       </div>
                       <div className="flex justify-between text-xs text-slate-500">
                         <span>Conservator: 3-5%</span>
@@ -778,42 +774,39 @@ const scenarioResults = useMemo(() => {
                       </div>
                     </div>
 
-                    {/* Opțiuni avansate */}
+                    {/* Opțiuni avansate scurte + CTA */}
                     <div className="md:col-span-2 space-y-4">
                       <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-4 border rounded-lg">
                         <div>
-                          <Label className="text-sm font-semibold">
-                            Reinvestirea automată
-                          </Label>
-                          <p className="text-xs text-slate-500 mt-1">
-                            Câștigurile sunt reinvestite automat (dobândă compusă)
-                          </p>
+                          <Label className="text-sm font-semibold">Reinvestirea automată</Label>
+                          <p className="text-xs text-slate-500 mt-1">Câștigurile sunt reinvestite automat (dobândă compusă)</p>
                         </div>
-                        <Switch 
-                          checked={reinvest} 
-                          onCheckedChange={setReinvest}
-                        />
+                        <Switch checked={reinvest} onCheckedChange={setReinvest} aria-label="Comută reinvestirea" />
                       </div>
 
                       <div className="flex gap-3">
-                        <Button 
-                          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white gap-2 h-11" 
+                        <Button
+                          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white gap-2 h-11"
                           disabled={inputErrors.length > 0 || isCalculating}
                           onClick={() => setShowErrors(inputErrors.length > 0)}
                         >
-                          <Calculator className="w-4 h-4" />
-                          {isCalculating ? 'Calculez...' : 'Calculează simularea'}
+                          <Calculator className="w-4 h-4" /> {isCalculating ? "Calculez..." : "Calculează simularea"}
                         </Button>
-                        
-                        <Button 
-                          variant="outline" 
-                          className="gap-2 h-11"
-                          onClick={addScenario}
-                          disabled={inputErrors.length > 0}
-                        >
-                          <Plus className="w-4 h-4" />
-                          Salvează scenariu
+                        <Button variant="outline" className="gap-2 h-11" onClick={addScenario} disabled={inputErrors.length > 0}>
+                          <Plus className="w-4 h-4" /> Salvează scenariu
                         </Button>
+                      </div>
+
+                      {/* Data de start (utilizată în etichetele de lună) */}
+                      <div className="flex items-center gap-3 text-sm">
+                        <Label className="min-w-40">Data de start</Label>
+                        <Input
+                          type="date"
+                          value={startDate}
+                          onChange={(e) => setStartDate(e.target.value)}
+                          className="h-10"
+                          aria-label="Data de start"
+                        />
                       </div>
                     </div>
                   </div>
@@ -821,7 +814,7 @@ const scenarioResults = useMemo(() => {
               </Card>
             </section>
 
-            {/* KPI îmbunătățit */}
+            {/* KPI */}
             {simulationResult && (
               <section id="summary">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
@@ -844,12 +837,12 @@ const scenarioResults = useMemo(() => {
                       title: "Valoare totală",
                       value: fmtCurrency(totalValue),
                       Icon: DollarSign,
-                      bgColor: "bg-indigo-50 dark:bg-indigo-900/20",
+                      bgColor: "bg-indigo-50 dark:bg-indigo-900/2 0",
                       textColor: "text-indigo-600",
                     },
                     {
                       title: "ROI total",
-                      value: `${yieldPct > 0 ? '+' : ''}${yieldPct.toFixed(1)}%`,
+                      value: `${yieldPct > 0 ? "+" : ""}${yieldPct.toFixed(1)}%`,
                       Icon: Percent,
                       bgColor: "bg-yellow-50 dark:bg-yellow-900/20",
                       textColor: "text-yellow-600",
@@ -871,7 +864,7 @@ const scenarioResults = useMemo(() => {
                   ))}
                 </div>
 
-                {/* Stats suplimentare cu explicații îmbunătățite */}
+                {/* Stats suplimentare */}
                 <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                   <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border shadow-sm">
                     <div className="text-slate-600 dark:text-slate-400 mb-1">Contribuție totală</div>
@@ -882,37 +875,32 @@ const scenarioResults = useMemo(() => {
                   </div>
                   <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border shadow-sm">
                     <div className="text-slate-600 dark:text-slate-400 mb-1">Multiplicator</div>
-                    <div className="font-bold text-green-600">
-                      {(totalValue / Math.max(totalContrib, 1)).toFixed(2)}×
-                    </div>
+                    <div className="font-bold text-green-600">{(totalValue / Math.max(totalContrib, 1)).toFixed(2)}×</div>
                     <div className="text-xs text-slate-500 mt-1">
-                    Fiecare euro investit devine {fmtCurrency(totalValue / Math.max(totalContrib, 1))}
+                      Fiecare euro investit devine {fmtCurrency(totalValue / Math.max(totalContrib, 1))}
+                    </div>
                   </div>
-                </div>
-                <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border shadow-sm">
-                  <div className="text-slate-600 dark:text-slate-400 mb-1">TIR (IRR) aproximativ</div>
-                  <div className="font-bold text-blue-600">
-                    {irrAnnual !== null ? (irrAnnual * 100).toFixed(1) : 'n/a'}%
+                  <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border shadow-sm">
+                    <div className="text-slate-600 dark:text-slate-400 mb-1">TIR (IRR) aproximativ</div>
+                    <div className="font-bold text-blue-600">{irrAnnual !== null ? (irrAnnual * 100).toFixed(1) : "n/a"}%</div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      {reinvest
+                        ? "Pe baza contribuțiilor lunare și răscumpărării finale."
+                        : "Pe baza contribuțiilor, câștigurilor retrase lunar și răscumpărării capitalului."}
+                    </div>
                   </div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    {reinvest
-                      ? "Pe baza contribuțiilor lunare și răscumpărării finale."
-                      : "Pe baza contribuțiilor, câștigurilor retrase lunar și răscumpărării capitalului."}
-                  </div>
-                </div>
                 </div>
               </section>
             )}
 
-            {/* Enhanced Chart with 4 lines */}
+            {/* Chart */}
             {simulationResult && (
               <section id="chart">
                 <Card className="shadow-xl rounded-2xl overflow-hidden border-0 ring-1 ring-slate-200 dark:ring-slate-800">
                   <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-purple-50 dark:from-slate-800 dark:to-slate-700">
                     <CardTitle className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <BarChart3 className="w-5 h-5 text-purple-600" />
-                        Evoluția detaliată a investiției
+                        <BarChart3 className="w-5 h-5 text-purple-600" /> Evoluția detaliată a investiției
                       </div>
                       <div className="flex items-center gap-2">
                         <Select value={chartType} onValueChange={(v) => setChartType(v as any)}>
@@ -933,7 +921,7 @@ const scenarioResults = useMemo(() => {
                   <CardContent className="p-6">
                     <div className="h-[500px] md:h-[600px]">
                       <ResponsiveContainer width="100%" height="100%">
-                        {chartType === 'area' ? (
+                        {chartType === "area" ? (
                           <AreaChart data={rows}>
                             <defs>
                               <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
@@ -959,7 +947,7 @@ const scenarioResults = useMemo(() => {
                                 background: "white",
                                 border: "1px solid #e5e7eb",
                                 borderRadius: 12,
-                                boxShadow: "0 10px 25px -3px rgba(0, 0, 0, 0.1)"
+                                boxShadow: "0 10px 25px -3px rgba(0, 0, 0, 0.1)",
                               }}
                             />
                             <Legend />
@@ -967,7 +955,7 @@ const scenarioResults = useMemo(() => {
                             <Area type="monotone" dataKey="Contribuții cumulate" stroke="#10b981" strokeWidth={2} fill="url(#colorContrib)" />
                             <Area type="monotone" dataKey="Câștiguri cumulate" stroke="#f59e0b" strokeWidth={2} fill="url(#colorGainsCum)" />
                           </AreaChart>
-                        ) : chartType === 'line' ? (
+                        ) : chartType === "line" ? (
                           <LineChart data={rows}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" className="dark:stroke-slate-700" />
                             <XAxis dataKey="luna" tick={{ fontSize: 12 }} stroke="#64748b" />
@@ -975,18 +963,13 @@ const scenarioResults = useMemo(() => {
                             <Tooltip
                               formatter={(v: number, name: string) => [fmtCurrency(v), name]}
                               labelFormatter={(l: string) => l}
-                              contentStyle={{
-                                background: "white",
-                                border: "1px solid #e5e7eb",
-                                borderRadius: 12,
-                                boxShadow: "0 10px 25px -3px rgba(0, 0, 0, 0.1)"
-                              }}
+                              contentStyle={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 12, boxShadow: "0 10px 25px -3px rgba(0, 0, 0, 0.1)" }}
                             />
                             <Legend />
-                            <Line type="monotone" dataKey="Valoare totală" stroke="#3b82f6" strokeWidth={3} dot={{ fill: '#3b82f6', strokeWidth: 2, r: 3 }} />
-                            <Line type="monotone" dataKey="Contribuții cumulate" stroke="#10b981" strokeWidth={2} dot={{ fill: '#10b981', strokeWidth: 2, r: 3 }} />
-                            <Line type="monotone" dataKey="Câștiguri cumulate" stroke="#f59e0b" strokeWidth={2} dot={{ fill: '#f59e0b', strokeWidth: 2, r: 3 }} />
-                            <Line type="monotone" dataKey="Câștig lunar" stroke="#8b5cf6" strokeWidth={2} dot={{ fill: '#8b5cf6', strokeWidth: 2, r: 3 }} />
+                            <Line type="monotone" dataKey="Valoare totală" stroke="#3b82f6" strokeWidth={3} dot={{ fill: "#3b82f6", strokeWidth: 2, r: 3 }} />
+                            <Line type="monotone" dataKey="Contribuții cumulate" stroke="#10b981" strokeWidth={2} dot={{ fill: "#10b981", strokeWidth: 2, r: 3 }} />
+                            <Line type="monotone" dataKey="Câștiguri cumulate" stroke="#f59e0b" strokeWidth={2} dot={{ fill: "#f59e0b", strokeWidth: 2, r: 3 }} />
+                            <Line type="monotone" dataKey="Câștig lunar" stroke="#8b5cf6" strokeWidth={2} dot={{ fill: "#8b5cf6", strokeWidth: 2, r: 3 }} />
                           </LineChart>
                         ) : (
                           <BarChart data={rows}>
@@ -996,12 +979,7 @@ const scenarioResults = useMemo(() => {
                             <Tooltip
                               formatter={(v: number, name: string) => [fmtCurrency(v), name]}
                               labelFormatter={(l: string) => l}
-                              contentStyle={{
-                                background: "white",
-                                border: "1px solid #e5e7eb",
-                                borderRadius: 12,
-                                boxShadow: "0 10px 25px -3px rgba(0, 0, 0, 0.1)"
-                              }}
+                              contentStyle={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 12, boxShadow: "0 10px 25px -3px rgba(0, 0, 0, 0.1)" }}
                             />
                             <Legend />
                             <Bar dataKey="Contribuții cumulate" fill="#10b981" radius={[4, 4, 0, 0]} />
@@ -1011,7 +989,7 @@ const scenarioResults = useMemo(() => {
                       </ResponsiveContainer>
                     </div>
 
-                    {/* Chart insights îmbunătățite */}
+                    {/* Chart insights */}
                     <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4 pt-4 border-t">
                       <div className="text-center">
                         <div className="text-2xl font-bold text-blue-600">{months}</div>
@@ -1019,11 +997,10 @@ const scenarioResults = useMemo(() => {
                       </div>
                       <div className="text-center">
                         <div className="text-2xl font-bold text-green-600">
-                          {totalGains > totalContrib ? '📈' : totalGains > 0 ? '📊' : '📉'}
+                          {totalGains > totalContrib ? "📈" : totalGains > 0 ? "📊" : "📉"}
                         </div>
                         <div className="text-xs text-slate-500">
-                          {totalGains > totalContrib ? 'Performanță excelentă' : 
-                           totalGains > 0 ? 'Performanță pozitivă' : 'Atenție la risc'}
+                          {totalGains > totalContrib ? "Performanță excelentă" : totalGains > 0 ? "Performanță pozitivă" : "Atenție la risc"}
                         </div>
                       </div>
                       <div className="text-center">
@@ -1033,32 +1010,38 @@ const scenarioResults = useMemo(() => {
                         <div className="text-xs text-slate-500">Câștig lunar final</div>
                       </div>
                       <div className="text-center">
-                        <div className="text-2xl font-bold text-orange-600">
-                          {((annualPct - 2) * years).toFixed(0)}%
-                        </div>
+                        <div className="text-2xl font-bold text-orange-600">{((annualPct - 2) * years).toFixed(0)}%</div>
                         <div className="text-xs text-slate-500">Avantaj vs. inflație (est.)</div>
                       </div>
                     </div>
 
-                    {/* Explicații pentru grafic */}
+                    {/* Legendă */}
                     <div className="mt-6 p-4 bg-slate-50 dark:bg-slate-800 rounded-lg">
                       <h4 className="text-sm font-bold mb-2">Legenda graficului:</h4>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
                         <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-blue-600 rounded"></div>
-                          <span><strong>Valoare totală:</strong> {reinvest ? "Suma totală a portofoliului" : "Portofoliu + câștiguri retrase"}</span>
+                          <div className="w-3 h-3 bg-blue-600 rounded" />
+                          <span>
+                            <strong>Valoare totală:</strong> {reinvest ? "Suma totală a portofoliului" : "Portofoliu + câștiguri retrase"}
+                          </span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-green-600 rounded"></div>
-                          <span><strong>Contribuții cumulate:</strong> Total investit până acum</span>
+                          <div className="w-3 h-3 bg-green-600 rounded" />
+                          <span>
+                            <strong>Contribuții cumulate:</strong> Total investit până acum
+                          </span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-yellow-600 rounded"></div>
-                          <span><strong>Câștiguri cumulate:</strong> Profitul total generat</span>
+                          <div className="w-3 h-3 bg-yellow-600 rounded" />
+                          <span>
+                            <strong>Câștiguri cumulate:</strong> Profitul total generat
+                          </span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-purple-600 rounded"></div>
-                          <span><strong>Câștig lunar:</strong> Câștigul din acea lună</span>
+                          <div className="w-3 h-3 bg-purple-600 rounded" />
+                          <span>
+                            <strong>Câștig lunar:</strong> Câștigul din acea lună
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -1067,23 +1050,17 @@ const scenarioResults = useMemo(() => {
               </section>
             )}
 
-            {/* Rest of sections remain the same */}
-            {/* Scenarii - secțiune nouă */}
+            {/* Scenarii */}
             <section id="scenarios">
               <Card className="shadow-xl rounded-2xl overflow-hidden border-0 ring-1 ring-slate-200 dark:ring-slate-800">
                 <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-indigo-50 dark:from-slate-800 dark:to-slate-700">
                   <CardTitle className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <PieChart className="w-5 h-5 text-indigo-600" />
-                      Comparare scenarii
+                      <PieChart className="w-5 h-5 text-indigo-600" /> Comparare scenarii
                     </div>
                     <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => setShowComparison(!showComparison)}
-                        disabled={scenarios.length === 0}
-                      >
-                        {showComparison ? 'Ascunde' : 'Compară'} ({scenarios.length})
+                      <Button variant="outline" onClick={() => setShowComparison(!showComparison)} disabled={scenarios.length === 0}>
+                        {showComparison ? "Ascunde" : "Compară"} ({scenarios.length})
                       </Button>
                     </div>
                   </CardTitle>
@@ -1092,19 +1069,12 @@ const scenarioResults = useMemo(() => {
                   {scenarios.length === 0 ? (
                     <div className="text-center py-12">
                       <PieChart className="w-16 h-16 text-slate-300 mx-auto mb-4" />
-                      <h3 className="text-lg font-semibold text-slate-600 dark:text-slate-400 mb-2">
-                        Niciun scenariu salvat
-                      </h3>
+                      <h3 className="text-lg font-semibold text-slate-600 dark:text-slate-400 mb-2">Niciun scenariu salvat</h3>
                       <p className="text-sm text-slate-500 mb-4">
                         Configurează parametrii și salvează scenarii pentru a compara diferite strategii de investiție.
                       </p>
-                      <Button
-                        onClick={addScenario}
-                        disabled={inputErrors.length > 0}
-                        className="gap-2"
-                      >
-                        <Plus className="w-4 h-4" />
-                        Salvează primul scenariu
+                      <Button onClick={addScenario} disabled={inputErrors.length > 0} className="gap-2">
+                        <Plus className="w-4 h-4" /> Salvează primul scenariu
                       </Button>
                     </div>
                   ) : (
@@ -1119,16 +1089,14 @@ const scenarioResults = useMemo(() => {
                           >
                             <div className="flex items-center justify-between mb-3">
                               <div className="flex items-center gap-2">
-                                <div
-                                  className="size-3 rounded-full"
-                                  style={{ backgroundColor: scenario.color }}
-                                />
+                                <div className="size-3 rounded-full" style={{ backgroundColor: scenario.color }} />
                                 <h4 className="font-semibold text-sm">{scenario.name}</h4>
                               </div>
                               <Button
                                 variant="outline"
                                 onClick={() => removeScenario(scenario.id)}
                                 className="h-6 w-6 p-0 hover:bg-red-50 hover:text-red-600"
+                                aria-label="Șterge scenariul"
                               >
                                 <Trash2 className="w-3 h-3" />
                               </Button>
@@ -1153,13 +1121,14 @@ const scenarioResults = useMemo(() => {
                               </div>
                             </div>
 
-                            {scenarioResults.find(r => r.id === scenario.id) && (
+                            {/* Rezultate rapide pentru scenariu */}
+                            {scenarioResults.find((r) => r.id === scenario.id) && (
                               <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-600">
                                 <div className="text-lg font-bold" style={{ color: scenario.color }}>
-                                  {fmtCurrency(scenarioResults.find(r => r.id === scenario.id)?.totalValue || 0)}
+                                  {fmtCurrency(scenarioResults.find((r) => r.id === scenario.id)?.totalValue || 0)}
                                 </div>
                                 <div className="text-xs text-slate-500">
-                                  ROI: {(scenarioResults.find(r => r.id === scenario.id)?.yieldPct || 0).toFixed(1)}%
+                                  ROI: {(scenarioResults.find((r) => r.id === scenario.id)?.yieldPct || 0).toFixed(1)}%
                                 </div>
                               </div>
                             )}
@@ -1173,7 +1142,7 @@ const scenarioResults = useMemo(() => {
                                 setYears(scenario.years)
                                 setAnnualPct(scenario.annualPct)
                                 setActiveScenario(scenario.id)
-                                scrollTo('params')
+                                scrollTo("params")
                               }}
                             >
                               Încarcă acest scenariu
@@ -1194,11 +1163,7 @@ const scenarioResults = useMemo(() => {
                                 <YAxis tickFormatter={(v: number) => fmtCurrency(v)} tick={{ fontSize: 12 }} />
                                 <Tooltip
                                   formatter={(v: number) => fmtCurrency(v)}
-                                  contentStyle={{
-                                    background: "white",
-                                    border: "1px solid #e5e7eb",
-                                    borderRadius: 12
-                                  }}
+                                  contentStyle={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 12 }}
                                 />
                                 <Bar dataKey="totalValue" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                               </BarChart>
@@ -1243,13 +1208,12 @@ const scenarioResults = useMemo(() => {
               </Card>
             </section>
 
-            {/* Note section */}
+            {/* Note & Metodologie */}
             <section id="assumptions">
               <Card className="shadow-xl rounded-2xl overflow-hidden border-0 ring-1 ring-slate-200 dark:ring-slate-800">
                 <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-green-50 dark:from-slate-800 dark:to-slate-700">
                   <CardTitle className="flex items-center gap-2">
-                    <FileText className="w-5 h-5 text-green-600" />
-                    Note & Metodologie
+                    <FileText className="w-5 h-5 text-green-600" /> Note & Metodologie
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="p-6 space-y-6">
@@ -1260,10 +1224,10 @@ const scenarioResults = useMemo(() => {
                         {[
                           "Contribuția se face la începutul fiecărei luni",
                           "Dobânda compusă se calculează lunar din rata anuală",
-                          "Nu sunt incluse taxe, comisioane sau inflația",
-                          "Randamentul este constant pe toată perioada",
-                          "Reinvestirea câștigurilor este automată",
-                          "Capitalul inițial trebuie să fie minim €1"
+                          "Taxele/comisioanele și inflația sunt 0 implicit (pot fi activate în cod)",
+                          "Randamentul este constant în simulare",
+                          "Reinvestirea câștigurilor este automată (dacă este activată)",
+                          "Capitalul inițial poate fi €0",
                         ].map((item, i) => (
                           <li key={i} className="flex gap-3 items-start">
                             <CheckCircle className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
@@ -1272,7 +1236,6 @@ const scenarioResults = useMemo(() => {
                         ))}
                       </ul>
                     </div>
-
                     <div>
                       <h4 className="text-sm font-bold mb-3 text-slate-700 dark:text-slate-300">Note personale:</h4>
                       <textarea
@@ -1285,14 +1248,8 @@ const scenarioResults = useMemo(() => {
                       />
                       <div className="flex justify-between items-center mt-2">
                         <span className="text-xs text-slate-400">{notes.length}/500 caractere</span>
-                        <Button
-                          variant="outline"
-                          onClick={() => copyToClipboard(notes)}
-                          disabled={!notes}
-                          className="gap-1"
-                        >
-                          <Copy className="w-3 h-3" />
-                          Copiază
+                        <Button variant="outline" onClick={() => copyToClipboard(notes)} disabled={!notes} className="gap-1">
+                          <Copy className="w-3 h-3" /> Copiază
                         </Button>
                       </div>
                     </div>
@@ -1321,9 +1278,9 @@ const scenarioResults = useMemo(() => {
                     <div className="flex items-start gap-2">
                       <AlertCircle className="w-4 h-4 text-yellow-600 mt-0.5 shrink-0" />
                       <div>
-                        <strong className="text-yellow-700 dark:text-yellow-400">Atenție:</strong> Aceasta este o simulare informativă. 
-                        Randamentele din trecut nu garantează rezultate viitoare. Consultă un consilier financiar pentru sfaturi personalizate.
-                        Investițiile implică riscuri și poți pierde bani.
+                        <strong className="text-yellow-700 dark:text-yellow-400">Atenție:</strong> Aceasta este o simulare informativă. Randamentele din trecut
+                        nu garantează rezultate viitoare. Consultă un consilier financiar pentru sfaturi personalizate. Investițiile implică riscuri și poți
+                        pierde bani.
                       </div>
                     </div>
                   </div>
@@ -1346,7 +1303,6 @@ const scenarioResults = useMemo(() => {
               <p className="text-xs text-slate-500">v2.0</p>
             </div>
           </div>
-          
           <nav className="space-y-1 text-sm">
             {[
               { id: "params", label: "Configurare", Icon: Settings },
@@ -1365,7 +1321,6 @@ const scenarioResults = useMemo(() => {
               </button>
             ))}
           </nav>
-
           {simulationResult && (
             <div className="pt-4 border-t">
               <div className="bg-gradient-to-r from-green-50 to-blue-50 dark:from-green-900/20 dark:to-blue-900/20 rounded-lg p-3">
